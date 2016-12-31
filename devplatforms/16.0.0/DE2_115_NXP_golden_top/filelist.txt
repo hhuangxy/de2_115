@@ -1,0 +1,2 @@
+DE2_115_NXP_golden_top.qp_info
+DE2_115_NXP_golden_top.qar
