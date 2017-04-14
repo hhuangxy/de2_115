@@ -444,43 +444,47 @@ output        [16:0]    HSMC_TX_D_P;
 inout          [6:0]    EX_IO;
 
 
-wire CLK_1M;
-clk clk1m (
+// Clock divider to slow down 50 MHz clock to 1MHz
+wire CLOCK_1;
+clk clk_main (
   .inclk0 (CLOCK_50),
-  .c0     (CLK_1M)
+  .c0     (CLOCK_1)
 );
 
 
-wire clk_slw;
-cntr_top cnt (
-  .clk (CLK_1M),
-  .hit (clk_slw)
+// Counter to make clock even slow
+wire clk_slow;
+cntr_clk #(
+  .CNT_VAL(10000)
+) clk_slow_main (
+  .clk_i (CLOCK_1),
+  .clk_o (clk_slow)
 );
-assign LEDR[17] = clk_slw;
+assign LEDR[17] = clk_slow;
 
-wire clk_slw2;
+wire clk_slow2;
 wire le, oen, sdo;
 ss ss0 (
-  .clk_i   (clk_slw),
-  .clk_o   (clk_slw2),
+  .clk_i   (clk_slow),
+  .clk_o   (clk_slow2),
   .btn     (KEY[0]),
   .row     (8'b11111111),
 
   .sdo     (sdo),
-  .le      (),
-  .oen     (),
+  .le      (le),
+  .oen     (oen),
 
   .cnt_led (LEDR[6:0])
 );
 
-assign LEDG[7]  = clk_slw2;
-assign GPIO[15] = clk_slw2;
+assign LEDG[7]  = clk_slow2;
+assign GPIO[15] = clk_slow2;
 
-assign le = SW[0];
+//assign le = SW[0];
 assign LEDG[1]  = le;
 assign GPIO[13] = le;
 
-assign oen = SW[1];
+//assign oen = SW[1];
 assign LEDG[2]  = oen;
 assign GPIO[11] = oen;
 
@@ -514,33 +518,34 @@ end
 endmodule
 
 
-
-module cntr_top (
-  input  clk,
-  output hit
+// Counter to slow clock even more
+module cntr_clk (
+  input  clk_i,
+  output clk_o
 );
+
+parameter CNT_VAL = 1000000;
 
 wire [31:0] val;
 wire        clr;
 reg         tgl = 1;
 
 cntr cntr0 (
-	.clock (clk),
-	.sclr  (clr),
-	.q     (val)
+  .clock (clk_i),
+  .sclr  (clr),
+  .q     (val)
 );
 
-assign clr = (val == 200000) ? 1 : 0;
+assign clr   = ( val == (CNT_VAL - 1) ) ? 1 : 0;
+assign clk_o = tgl;
 
-always @(posedge clk) begin
+always @(posedge clk_i) begin
   if (clr == 1) begin
     tgl <= ~tgl;
   end else begin
     tgl <= tgl;
   end
 end
-
-assign hit = tgl;
 
 endmodule
 
@@ -556,10 +561,10 @@ module ss (
   output [7:0] cnt_led
 );
 
-localparam BTN_ON  = 0;
+localparam BTN_ON  = 1;
 localparam BTN_OFF = 1;
 localparam OEN_ON  = 0;
-localparam OEN_OFF = 0;
+localparam OEN_OFF = 1;
 
 localparam SIZE = 3;
 localparam IDLE = 0;
@@ -573,15 +578,20 @@ reg [7:0] cnt = CNT_RST_VAL;
 assign cnt_led = cnt;
 
 localparam red = 8'b00000111;
-localparam grn = 8'b11111111;
+localparam grn = 8'b00111000;
 localparam blu = 8'b11000000;
-reg  [23:0] rgb = {blu, red, grn};
+reg  [23:0] rgb = 24'b1;
 wire [31:0] srl = {rgb, row};
 
 assign clk_g = (currSt == SEND) ? 0 : 1;
 assign clk_o = (clk_g == 1) ? 0 : clk_i;
 
+localparam CNT_ST_SEND = 31;
+localparam CNT_ST_DONE = 2;
+
 // FSM
+
+// Combinational logic to determine next state
 always @(*) begin
   nextSt = currSt;
 
@@ -593,61 +603,69 @@ always @(*) begin
     end
 
     SEND: begin
-      if (cnt == 31) begin
+      if (cnt == CNT_ST_SEND) begin
         nextSt = DONE;
       end
     end
 
     DONE: begin
-      nextSt = IDLE;
+      if (cnt == CNT_ST_DONE) begin
+        nextSt = IDLE;
+      end
     end
   endcase
 end
 
+// Register the next state
 always @(posedge clk_i) begin
   currSt <= nextSt;
 end
 
+// Sequential logic for counters and shifting
 always @(posedge clk_i) begin
   case(currSt)
     IDLE: begin
-      if (btn == BTN_ON) begin
+      if (nextSt == SEND) begin
         cnt <= 0;
       end
     end
 
     SEND: begin
-      if (cnt == 31) begin
-        cnt <= CNT_RST_VAL;
+      if (nextSt == DONE) begin
+        cnt <= 0;
       end else begin
         cnt <= cnt + 1;
       end
     end
 
-    default: begin
-      cnt <= CNT_RST_VAL;
+    DONE: begin
+      if (nextSt == IDLE) begin
+        cnt <= 0;
+        rgb <= {rgb[22:0], rgb[23]};
+      end else begin
+        cnt <= cnt + 1;
+      end
     end
   endcase
 end
 
+// Combinational logic for serial data out
 always @(*) begin
-  le  = 0;
-  oen = OEN_OFF;
+  oen = OEN_ON;
   sdo = 0;
+  le  = 0;
 
   case(currSt)
     SEND: begin
-      case(cnt)
-        31: le = 1;
-      endcase
-
       sdo = srl[cnt];
     end
 
     DONE: begin
-      oen = OEN_ON;
+      oen = OEN_OFF;
+      le  = ~cnt[0];
     end
   endcase
 end
+
 
 endmodule
